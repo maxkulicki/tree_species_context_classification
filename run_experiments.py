@@ -206,6 +206,17 @@ def load_data():
 
 
 # ---------------------------------------------------------------------------
+# Feature importance helpers
+# ---------------------------------------------------------------------------
+def map_feature_to_source(feature_name, feature_groups):
+    """Return the source group name for a given feature."""
+    for source, cols in feature_groups.items():
+        if feature_name in cols:
+            return source
+    return "unknown"
+
+
+# ---------------------------------------------------------------------------
 # Experiment runner
 # ---------------------------------------------------------------------------
 def run_experiment(
@@ -264,6 +275,8 @@ def run_experiment(
         "f1_macro": f1_macro,
         "f1_weighted": f1_weighted,
         "report": report,
+        "feature_names": list(feature_cols),
+        "feature_importances": clf.feature_importances_,
     }
 
 
@@ -309,7 +322,7 @@ def main():
         print()
 
     # --- Summary table ---
-    summary = pd.DataFrame(results).drop(columns=["report"])
+    summary = pd.DataFrame(results).drop(columns=["report", "feature_names", "feature_importances"])
     summary = summary.sort_values("balanced_accuracy", ascending=False).reset_index(drop=True)
 
     print("=" * 70)
@@ -322,8 +335,55 @@ def main():
         )
     )
 
-    # --- Save results ---
+    # --- Feature importance analysis ---
+    print("\n" + "=" * 70)
+    print("FEATURE IMPORTANCE ANALYSIS")
+    print("=" * 70)
+
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    all_source_names = sorted(feature_groups.keys())
+
+    for result in results:
+        combo_name = result["combination"]
+        safe_name = combo_name.replace(" + ", "_").replace(" ", "_")
+        feat_names = result["feature_names"]
+        feat_importances = result["feature_importances"]
+
+        # Build per-feature importance DataFrame
+        imp_df = pd.DataFrame({
+            "feature": feat_names,
+            "source": [map_feature_to_source(f, feature_groups) for f in feat_names],
+            "importance": feat_importances,
+        }).sort_values("importance", ascending=False).reset_index(drop=True)
+
+        # Save per-feature CSV
+        imp_path = RESULTS_DIR / f"importance_{safe_name}.csv"
+        imp_df.to_csv(imp_path, index=False)
+
+        # Source-level aggregation
+        source_importance = imp_df.groupby("source")["importance"].sum()
+
+        # Add source importance columns to summary
+        for src in all_source_names:
+            col = f"importance_{src}"
+            if col not in summary.columns:
+                summary[col] = np.nan
+            row_mask = summary["combination"] == combo_name
+            summary.loc[row_mask, col] = source_importance.get(src, 0.0)
+
+        # Console output
+        print(f"\n--- {combo_name} ---")
+        print(f"  Top 15 features:")
+        for _, row in imp_df.head(15).iterrows():
+            print(f"    {row['importance']:.4f}  [{row['source']}]  {row['feature']}")
+
+        total_imp = source_importance.sum()
+        print(f"  Source-level breakdown:")
+        for src in sorted(source_importance.index, key=lambda s: source_importance[s], reverse=True):
+            pct = 100.0 * source_importance[src] / total_imp if total_imp > 0 else 0.0
+            print(f"    {src:>15s}: {source_importance[src]:.4f} ({pct:.1f}%)")
+
+    # --- Save results ---
     summary.to_csv(RESULTS_DIR / "comparison.csv", index=False)
     print(f"\nSaved comparison to {RESULTS_DIR / 'comparison.csv'}")
 
