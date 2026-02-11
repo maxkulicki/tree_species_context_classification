@@ -34,6 +34,8 @@ ALPHAEARTH_PATH = DATA_DIR / "plots_alphaearth_2018.csv"
 RPP_PATH = DATA_DIR / "plots_rpp_probabilities.csv"
 RESULTS_DIR = DATA_DIR / "experiment_results"
 
+SPECIES_NAMES_PATH = DATA_DIR / ".." / "species_id_names.csv"
+
 SEED = 42
 MIN_SAMPLES = 10
 
@@ -52,7 +54,7 @@ BDL_CATEGORICALS = [
 ]
 
 # BDL numeric columns (plot-level constants)
-BDL_NUMERICS = ["rotat_age", "sub_area", "part_cd", "spec_age", "damage_degree"]
+BDL_NUMERICS = ["rotat_age", "sub_area", "part_cd", "spec_age"]
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +265,9 @@ def run_experiment(
 
     labels = sorted(np.unique(np.concatenate([y_test, y_pred])))
     report = classification_report(y_test, y_pred, labels=labels, digits=3, zero_division=0)
+    report_dict = classification_report(
+        y_test, y_pred, labels=labels, digits=3, zero_division=0, output_dict=True,
+    )
 
     return {
         "combination": combo_name,
@@ -275,6 +280,7 @@ def run_experiment(
         "f1_macro": f1_macro,
         "f1_weighted": f1_weighted,
         "report": report,
+        "per_species_metrics": report_dict,
         "feature_names": list(feature_cols),
         "feature_importances": clf.feature_importances_,
     }
@@ -321,8 +327,49 @@ def main():
             )
         print()
 
+    # --- Per-species metrics CSV ---
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Load species name mapping
+    species_names = {}
+    if SPECIES_NAMES_PATH.exists():
+        sn = pd.read_csv(SPECIES_NAMES_PATH)
+        for _, row in sn.iterrows():
+            species_names[int(row["CODE"])] = {
+                "latin_name": row["LATIN_NAME"],
+                "common_name": row["COMMON_NAME"],
+            }
+
+    per_species_rows = []
+    for result in results:
+        combo_name = result["combination"]
+        report_dict = result["per_species_metrics"]
+        for key, metrics in report_dict.items():
+            # Skip aggregate rows (accuracy, macro avg, weighted avg)
+            if not isinstance(metrics, dict) or "precision" not in metrics:
+                continue
+            if key in ("accuracy", "macro avg", "weighted avg"):
+                continue
+            sp_id = int(key)
+            names = species_names.get(sp_id, {})
+            per_species_rows.append({
+                "combination": combo_name,
+                "species": sp_id,
+                "latin_name": names.get("latin_name", ""),
+                "common_name": names.get("common_name", ""),
+                "precision": metrics["precision"],
+                "recall": metrics["recall"],
+                "f1": metrics["f1-score"],
+                "support": int(metrics["support"]),
+            })
+    per_species_df = pd.DataFrame(per_species_rows)
+    per_species_df.to_csv(RESULTS_DIR / "per_species_metrics.csv", index=False)
+    print(f"\nSaved per-species metrics to {RESULTS_DIR / 'per_species_metrics.csv'}")
+
     # --- Summary table ---
-    summary = pd.DataFrame(results).drop(columns=["report", "feature_names", "feature_importances"])
+    summary = pd.DataFrame(results).drop(
+        columns=["report", "per_species_metrics", "feature_names", "feature_importances"],
+    )
     summary = summary.sort_values("balanced_accuracy", ascending=False).reset_index(drop=True)
 
     print("=" * 70)

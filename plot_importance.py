@@ -256,6 +256,87 @@ def plot_importance_heatmap(imp_dfs):
 
 
 # ---------------------------------------------------------------------------
+# Plot 5: Species performance heatmap
+# ---------------------------------------------------------------------------
+def plot_species_performance():
+    """Heatmap of per-species F1-score across all combinations."""
+    path = RESULTS_DIR / "per_species_metrics.csv"
+    if not path.exists():
+        print(f"  Skipping species performance heatmap: {path.name} not found")
+        return
+
+    df = pd.read_csv(path)
+
+    # Build F1 and support pivot tables
+    # Species as rows (sorted numerically), combinations as columns
+    df["species"] = df["species"].astype(int)
+    ordered_combos = [c for c in COMBO_ORDER if c in df["combination"].values]
+
+    f1_pivot = df.pivot_table(index="species", columns="combination", values="f1")
+    f1_pivot = f1_pivot[ordered_combos].sort_index()
+
+    support_pivot = df.pivot_table(index="species", columns="combination", values="support")
+    support_pivot = support_pivot[ordered_combos].sort_index()
+
+    # Map species IDs to readable labels
+    name_map = {}
+    if "latin_name" in df.columns:
+        for sp_id in f1_pivot.index:
+            row = df[df["species"] == sp_id].iloc[0]
+            latin = row.get("latin_name", "")
+            common = row.get("common_name", "")
+            if pd.notna(latin) and latin:
+                name_map[sp_id] = f"{common} ({latin})"
+            else:
+                name_map[sp_id] = str(sp_id)
+
+    if name_map:
+        f1_pivot.index = [name_map.get(sp, str(sp)) for sp in f1_pivot.index]
+        support_pivot.index = [name_map.get(sp, str(sp)) for sp in support_pivot.index]
+
+    # Use short labels for columns
+    short_cols = [SHORT_LABELS[c] for c in ordered_combos]
+    f1_pivot.columns = short_cols
+    support_pivot.columns = short_cols
+
+    # Build annotation strings: "F1\n(n=support)"
+    annot = f1_pivot.copy().astype(str)
+    for col in short_cols:
+        for sp in f1_pivot.index:
+            f1_val = f1_pivot.loc[sp, col]
+            sup_val = support_pivot.loc[sp, col]
+            if pd.isna(f1_val):
+                annot.loc[sp, col] = ""
+            else:
+                annot.loc[sp, col] = f"{f1_val:.2f}\n(n={int(sup_val)})"
+
+    fig, ax = plt.subplots(figsize=(14, max(8, len(f1_pivot) * 0.45)))
+
+    sns.heatmap(
+        f1_pivot,
+        annot=annot,
+        fmt="",
+        cmap="YlGn",
+        linewidths=0.5,
+        ax=ax,
+        vmin=0,
+        vmax=1,
+        cbar_kws={"label": "F1-score"},
+    )
+
+    ax.set_title("Per-species F1-score across feature combinations", fontsize=13,
+                 fontweight="bold", pad=12)
+    ax.set_ylabel("Species ID")
+    ax.set_xlabel("")
+
+    fig.tight_layout()
+    out = RESULTS_DIR / "species_performance.pdf"
+    fig.savefig(out, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved {out.name}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -268,6 +349,7 @@ def main():
     plot_performance(comparison)
     plot_top_features_grid(imp_dfs)
     plot_importance_heatmap(imp_dfs)
+    plot_species_performance()
 
     print("\nDone.")
 
